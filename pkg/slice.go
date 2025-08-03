@@ -28,3 +28,11 @@ func EditSliceConfig() {
 func DescribeSliceConfig() {
 	internal.DescribeSliceConfig(CliOptions.ObjectName, CliOptions.Namespace, CliOptions.Cluster)
 }
+
+func ShowSliceHealth() {
+	internal.ShowSliceHealth(CliOptions.ObjectName, CliOptions.Namespace, CliOptions.Cluster, CliOptions.OutputFormat)
+}
+
+func ShowSliceHealthAll() {
+	internal.ShowSliceHealthAll(CliOptions.Cluster, CliOptions.OutputFormat)
+}
