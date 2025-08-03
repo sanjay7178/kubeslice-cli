@@ -46,6 +46,35 @@ type ComponentHealthStatus struct {
 	Details    string            `json:"details"`
 }
 
+type SliceHealth struct {
+	SliceName           string                     `json:"slice_name"`
+	Namespace           string                     `json:"namespace"`
+	OverallStatus       string                     `json:"overall_status"`
+	ConfigStatus        SliceConfigStatus          `json:"config_status"`
+	GatewayStatus       SliceGatewayStatus         `json:"gateway_status"`
+	ConnectivityStatus  SliceConnectivityStatus    `json:"connectivity_status"`
+	ParticipatingClusters []string                 `json:"participating_clusters"`
+	Timestamp           string                     `json:"timestamp"`
+}
+
+type SliceConfigStatus struct {
+	Status  string `json:"status"`
+	Phase   string `json:"phase"`
+	Details string `json:"details"`
+}
+
+type SliceGatewayStatus struct {
+	Status   string            `json:"status"`
+	Gateways map[string]string `json:"gateways"`
+	Details  string            `json:"details"`
+}
+
+type SliceConnectivityStatus struct {
+	Status            string            `json:"status"`
+	InterClusterLinks map[string]string `json:"inter_cluster_links"`
+	Details           string            `json:"details"`
+}
+
 func ShowClusterHealth(clusterName string, config *ConfigurationSpecs, options *CliOptionsStruct) {
 	var cluster *Cluster
 	var clusterType string
@@ -90,6 +119,35 @@ func ShowAllClustersHealth(config *ConfigurationSpecs, options *CliOptionsStruct
 	}
 
 	displayAllClustersHealth(allHealth, options.OutputFormat)
+}
+
+func ShowSliceHealth(sliceName string, config *ConfigurationSpecs, options *CliOptionsStruct) {
+	util.Printf("\n%s Checking health for slice: %s", util.Info, sliceName)
+	
+	health := checkSliceHealth(sliceName, config, options)
+	displaySliceHealth(health, options.OutputFormat)
+}
+
+func ShowAllSlicesHealth(config *ConfigurationSpecs, options *CliOptionsStruct) {
+	util.Printf("\n%s Checking health for all slices", util.Info)
+	
+	var allHealth []SliceHealth
+	
+	// Get all slice configs from the controller cluster
+	controllerCluster := &config.Configuration.ClusterConfiguration.ControllerCluster
+	projectNamespace := "kubeslice-" + config.Configuration.KubeSliceConfiguration.ProjectName
+	if options.Namespace != "" {
+		projectNamespace = options.Namespace
+	}
+	
+	sliceNames := getAllSliceNames(controllerCluster, projectNamespace)
+	
+	for _, sliceName := range sliceNames {
+		sliceHealth := checkSliceHealth(sliceName, config, options)
+		allHealth = append(allHealth, sliceHealth)
+	}
+	
+	displayAllSlicesHealth(allHealth, options.OutputFormat)
 }
 
 func checkClusterHealth(cluster Cluster, clusterType string) ClusterHealth {
@@ -417,4 +475,355 @@ func getStatusForTable(status string) string {
 	default:
 		return "? Unknown"
 	}
+}
+
+func getAllSliceNames(controllerCluster *Cluster, namespace string) []string {
+	var outB, errB bytes.Buffer
+	var sliceNames []string
+	
+	err := util.RunCommandCustomIO("kubectl", &outB, &errB, true,
+		"--context="+controllerCluster.ContextName,
+		"--kubeconfig="+controllerCluster.KubeConfigPath,
+		"get", "sliceconfigs", "-n", namespace,
+		"-o", "jsonpath={.items[*].metadata.name}")
+	
+	if err != nil {
+		util.Printf("%s Failed to get slice configurations: %v", util.Cross, err)
+		return sliceNames
+	}
+	
+	if outB.String() != "" {
+		sliceNames = strings.Fields(outB.String())
+	}
+	
+	return sliceNames
+}
+
+func checkSliceHealth(sliceName string, config *ConfigurationSpecs, options *CliOptionsStruct) SliceHealth {
+	controllerCluster := &config.Configuration.ClusterConfiguration.ControllerCluster
+	projectNamespace := "kubeslice-" + config.Configuration.KubeSliceConfiguration.ProjectName
+	if options.Namespace != "" {
+		projectNamespace = options.Namespace
+	}
+	
+	health := SliceHealth{
+		SliceName: sliceName,
+		Namespace: projectNamespace,
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+	
+	// Check slice configuration status
+	health.ConfigStatus = checkSliceConfigStatus(controllerCluster, sliceName, projectNamespace)
+	
+	// Get participating clusters from slice config
+	health.ParticipatingClusters = getSliceParticipatingClusters(controllerCluster, sliceName, projectNamespace)
+	
+	// Check slice gateway status
+	health.GatewayStatus = checkSliceGatewayStatus(controllerCluster, sliceName, projectNamespace, health.ParticipatingClusters)
+	
+	// Check connectivity between clusters
+	health.ConnectivityStatus = checkSliceConnectivityStatus(config, sliceName, projectNamespace, health.ParticipatingClusters)
+	
+	// Determine overall status
+	health.OverallStatus = determineSliceOverallStatus(health.ConfigStatus.Status, health.GatewayStatus.Status, health.ConnectivityStatus.Status)
+	
+	return health
+}
+
+func checkSliceConfigStatus(controllerCluster *Cluster, sliceName string, namespace string) SliceConfigStatus {
+	var outB, errB bytes.Buffer
+	status := SliceConfigStatus{
+		Status: HealthStatusUnknown,
+	}
+	
+	// Get slice config status
+	err := util.RunCommandCustomIO("kubectl", &outB, &errB, true,
+		"--context="+controllerCluster.ContextName,
+		"--kubeconfig="+controllerCluster.KubeConfigPath,
+		"get", "sliceconfig", sliceName, "-n", namespace,
+		"-o", "jsonpath={.status.phase}")
+	
+	if err != nil {
+		status.Details = fmt.Sprintf("Failed to get slice config: %v", err)
+		status.Status = HealthStatusUnhealthy
+		return status
+	}
+	
+	phase := strings.TrimSpace(outB.String())
+	status.Phase = phase
+	
+	switch phase {
+	case "Ready":
+		status.Status = HealthStatusHealthy
+		status.Details = "Slice configuration is ready"
+	case "Pending":
+		status.Status = HealthStatusUnhealthy
+		status.Details = "Slice configuration is pending"
+	case "Failed":
+		status.Status = HealthStatusUnhealthy
+		status.Details = "Slice configuration has failed"
+	default:
+		if phase == "" {
+			status.Status = HealthStatusUnhealthy
+			status.Details = "Slice configuration status not available"
+		} else {
+			status.Status = HealthStatusUnknown
+			status.Details = fmt.Sprintf("Unknown slice phase: %s", phase)
+		}
+	}
+	
+	return status
+}
+
+func getSliceParticipatingClusters(controllerCluster *Cluster, sliceName string, namespace string) []string {
+	var outB, errB bytes.Buffer
+	var clusters []string
+	
+	err := util.RunCommandCustomIO("kubectl", &outB, &errB, true,
+		"--context="+controllerCluster.ContextName,
+		"--kubeconfig="+controllerCluster.KubeConfigPath,
+		"get", "sliceconfig", sliceName, "-n", namespace,
+		"-o", "jsonpath={.spec.clusters}")
+	
+	if err == nil && outB.String() != "" {
+		clusterList := strings.Trim(outB.String(), "[]")
+		if clusterList != "" {
+			clusters = strings.Split(clusterList, ",")
+			for i := range clusters {
+				clusters[i] = strings.TrimSpace(clusters[i])
+			}
+		}
+	}
+	
+	return clusters
+}
+
+func checkSliceGatewayStatus(controllerCluster *Cluster, sliceName string, namespace string, participatingClusters []string) SliceGatewayStatus {
+	status := SliceGatewayStatus{
+		Status:   HealthStatusUnknown,
+		Gateways: make(map[string]string),
+	}
+	
+	allHealthy := true
+	totalGateways := 0
+	healthyGateways := 0
+	
+	// Check slice gateways for each participating cluster
+	for _, cluster := range participatingClusters {
+		gatewayStatus := checkSliceGatewayInCluster(controllerCluster, sliceName, namespace, cluster)
+		status.Gateways[cluster] = gatewayStatus
+		totalGateways++
+		
+		if gatewayStatus == HealthStatusHealthy {
+			healthyGateways++
+		} else {
+			allHealthy = false
+		}
+	}
+	
+	if totalGateways == 0 {
+		status.Status = HealthStatusUnknown
+		status.Details = "No participating clusters found"
+	} else if allHealthy {
+		status.Status = HealthStatusHealthy
+		status.Details = fmt.Sprintf("All %d slice gateways are healthy", totalGateways)
+	} else {
+		status.Status = HealthStatusUnhealthy
+		status.Details = fmt.Sprintf("%d out of %d slice gateways are healthy", healthyGateways, totalGateways)
+	}
+	
+	return status
+}
+
+func checkSliceGatewayInCluster(controllerCluster *Cluster, sliceName string, namespace string, clusterName string) string {
+	var outB, errB bytes.Buffer
+	
+	// Check if slice gateway exists and is ready
+	err := util.RunCommandCustomIO("kubectl", &outB, &errB, true,
+		"--context="+controllerCluster.ContextName,
+		"--kubeconfig="+controllerCluster.KubeConfigPath,
+		"get", "slicegateways", "-n", namespace,
+		"-l", fmt.Sprintf("original-slice-name=%s", sliceName),
+		"-o", "jsonpath={.items[*].status.config.sliceGatewayConnectivityStatus.gatewayStatus}")
+	
+	if err != nil {
+		return HealthStatusUnknown
+	}
+	
+	statusOutput := strings.TrimSpace(outB.String())
+	if statusOutput == "" {
+		return HealthStatusUnknown
+	}
+	
+	// Check if gateway status indicates healthy state
+	if strings.Contains(statusOutput, "Ready") || strings.Contains(statusOutput, "Connected") {
+		return HealthStatusHealthy
+	} else if strings.Contains(statusOutput, "Failed") || strings.Contains(statusOutput, "Error") {
+		return HealthStatusUnhealthy
+	}
+	
+	return HealthStatusUnknown
+}
+
+func checkSliceConnectivityStatus(config *ConfigurationSpecs, sliceName string, namespace string, participatingClusters []string) SliceConnectivityStatus {
+	status := SliceConnectivityStatus{
+		Status:            HealthStatusUnknown,
+		InterClusterLinks: make(map[string]string),
+	}
+	
+	if len(participatingClusters) < 2 {
+		status.Status = HealthStatusHealthy
+		status.Details = "Single cluster slice - no inter-cluster connectivity required"
+		return status
+	}
+	
+	controllerCluster := &config.Configuration.ClusterConfiguration.ControllerCluster
+	allHealthy := true
+	totalLinks := 0
+	healthyLinks := 0
+	
+	// Check connectivity between each pair of clusters
+	for i, cluster1 := range participatingClusters {
+		for j, cluster2 := range participatingClusters {
+			if i < j { // avoid checking same pair twice
+				linkKey := fmt.Sprintf("%s<->%s", cluster1, cluster2)
+				linkStatus := checkInterClusterConnectivity(controllerCluster, sliceName, namespace, cluster1, cluster2)
+				status.InterClusterLinks[linkKey] = linkStatus
+				totalLinks++
+				
+				if linkStatus == HealthStatusHealthy {
+					healthyLinks++
+				} else {
+					allHealthy = false
+				}
+			}
+		}
+	}
+	
+	if totalLinks == 0 {
+		status.Status = HealthStatusHealthy
+		status.Details = "No inter-cluster connectivity to check"
+	} else if allHealthy {
+		status.Status = HealthStatusHealthy
+		status.Details = fmt.Sprintf("All %d inter-cluster links are healthy", totalLinks)
+	} else {
+		status.Status = HealthStatusUnhealthy
+		status.Details = fmt.Sprintf("%d out of %d inter-cluster links are healthy", healthyLinks, totalLinks)
+	}
+	
+	return status
+}
+
+func checkInterClusterConnectivity(controllerCluster *Cluster, sliceName string, namespace string, cluster1 string, cluster2 string) string {
+	var outB, errB bytes.Buffer
+	
+	// Check if slice gateways between clusters are connected
+	err := util.RunCommandCustomIO("kubectl", &outB, &errB, true,
+		"--context="+controllerCluster.ContextName,
+		"--kubeconfig="+controllerCluster.KubeConfigPath,
+		"get", "slicegateways", "-n", namespace,
+		"-l", fmt.Sprintf("original-slice-name=%s", sliceName),
+		"-o", "jsonpath={.items[*].status.config.sliceGatewayConnectivityStatus}")
+	
+	if err != nil {
+		return HealthStatusUnknown
+	}
+	
+	connectivityOutput := outB.String()
+	if connectivityOutput == "" {
+		return HealthStatusUnknown
+	}
+	
+	// Simple heuristic: if we find "Connected" status, assume connectivity is healthy
+	if strings.Contains(connectivityOutput, "Connected") {
+		return HealthStatusHealthy
+	} else if strings.Contains(connectivityOutput, "Failed") || strings.Contains(connectivityOutput, "Disconnected") {
+		return HealthStatusUnhealthy
+	}
+	
+	return HealthStatusUnknown
+}
+
+func determineSliceOverallStatus(configStatus, gatewayStatus, connectivityStatus string) string {
+	if configStatus == HealthStatusHealthy && gatewayStatus == HealthStatusHealthy && connectivityStatus == HealthStatusHealthy {
+		return HealthStatusHealthy
+	} else if configStatus == HealthStatusUnhealthy || gatewayStatus == HealthStatusUnhealthy || connectivityStatus == HealthStatusUnhealthy {
+		return HealthStatusUnhealthy
+	}
+	return HealthStatusUnknown
+}
+
+func displaySliceHealth(health SliceHealth, outputFormat string) {
+	if outputFormat == "json" {
+		util.PrintJSON(health)
+		return
+	}
+	if outputFormat == "yaml" {
+		util.PrintYAML(health)
+		return
+	}
+
+	// Default table format
+	util.Printf("\n=== Slice Health Report ===")
+	util.Printf("Slice: %s", health.SliceName)
+	util.Printf("Namespace: %s", health.Namespace)
+	util.Printf("Overall Status: %s", getStatusWithIcon(health.OverallStatus))
+	util.Printf("Timestamp: %s", health.Timestamp)
+	util.Printf("")
+
+	util.Printf("Configuration Status: %s", getStatusWithIcon(health.ConfigStatus.Status))
+	util.Printf("  Phase: %s", health.ConfigStatus.Phase)
+	util.Printf("  %s", health.ConfigStatus.Details)
+	util.Printf("")
+
+	util.Printf("Gateway Status: %s", getStatusWithIcon(health.GatewayStatus.Status))
+	util.Printf("  %s", health.GatewayStatus.Details)
+	for cluster, status := range health.GatewayStatus.Gateways {
+		util.Printf("  - %s: %s", cluster, getStatusWithIcon(status))
+	}
+	util.Printf("")
+
+	util.Printf("Connectivity Status: %s", getStatusWithIcon(health.ConnectivityStatus.Status))
+	util.Printf("  %s", health.ConnectivityStatus.Details)
+	for link, status := range health.ConnectivityStatus.InterClusterLinks {
+		util.Printf("  - %s: %s", link, getStatusWithIcon(status))
+	}
+	util.Printf("")
+
+	if len(health.ParticipatingClusters) > 0 {
+		util.Printf("Participating Clusters: %s", strings.Join(health.ParticipatingClusters, ", "))
+	}
+}
+
+func displayAllSlicesHealth(allHealth []SliceHealth, outputFormat string) {
+	if outputFormat == "json" {
+		util.PrintJSON(allHealth)
+		return
+	}
+	if outputFormat == "yaml" {
+		util.PrintYAML(allHealth)
+		return
+	}
+
+	// Default table format
+	util.Printf("\n=== All Slices Health Report ===")
+	util.Printf("%-20s %-15s %-12s %-12s %-12s %-12s", "SLICE", "NAMESPACE", "OVERALL", "CONFIG", "GATEWAY", "CONNECTIVITY")
+	util.Printf("%-20s %-15s %-12s %-12s %-12s %-12s", 
+		strings.Repeat("-", 20), 
+		strings.Repeat("-", 15), 
+		strings.Repeat("-", 12), 
+		strings.Repeat("-", 12), 
+		strings.Repeat("-", 12), 
+		strings.Repeat("-", 12))
+
+	for _, health := range allHealth {
+		util.Printf("%-20s %-15s %-12s %-12s %-12s %-12s",
+			health.SliceName,
+			health.Namespace,
+			getStatusForTable(health.OverallStatus),
+			getStatusForTable(health.ConfigStatus.Status),
+			getStatusForTable(health.GatewayStatus.Status),
+			getStatusForTable(health.ConnectivityStatus.Status))
+	}
+	util.Printf("")
 }
