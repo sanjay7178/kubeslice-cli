@@ -11,3 +11,11 @@ func ShowHealthCluster(clusterName string) {
 func ShowHealthAllClusters() {
 	internal.ShowAllClustersHealth(ApplicationConfiguration, CliOptions)
 }
+
+func ShowHealthSlice(sliceName string) {
+	internal.ShowSliceHealth(sliceName, ApplicationConfiguration, CliOptions)
+}
+
+func ShowHealthAllSlices() {
+	internal.ShowAllSlicesHealth(ApplicationConfiguration, CliOptions)
+}
