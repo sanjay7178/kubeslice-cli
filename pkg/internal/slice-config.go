@@ -128,3 +128,87 @@ func CreateSliceConfig(namespace string, controllerCluster *Cluster, filename st
 	ApplyFile(filename, namespace, controllerCluster)
 	util.Printf("\nSuccessfully Applied Slice Configuration.")
 }
+
+func ShowSliceHealth(sliceConfigName string, namespace string, controllerCluster *Cluster, outputFormat string) {
+	util.Printf("\nFetching KubeSlice slice health status...")
+	if sliceConfigName == "" {
+		// Show health for all slices in the namespace
+		GetSliceHealthForNamespace(namespace, controllerCluster, outputFormat)
+	} else {
+		// Show health for specific slice
+		GetSliceHealthForSlice(sliceConfigName, namespace, controllerCluster, outputFormat)
+	}
+	time.Sleep(200 * time.Millisecond)
+}
+
+func ShowSliceHealthAll(controllerCluster *Cluster, outputFormat string) {
+	util.Printf("\nFetching KubeSlice slice health status for all namespaces...")
+	GetSliceHealthAllNamespaces(controllerCluster, outputFormat)
+	time.Sleep(200 * time.Millisecond)
+}
+
+func GetSliceHealthForSlice(sliceConfigName string, namespace string, controllerCluster *Cluster, outputFormat string) {
+	// Get the specific slice config with health status
+	cmdArgs := []string{}
+	if controllerCluster != nil {
+		cmdArgs = append(cmdArgs, "--context="+controllerCluster.ContextName, "--kubeconfig="+controllerCluster.KubeConfigPath)
+	}
+	
+	// Check if output format is specified
+	if outputFormat == "json" || outputFormat == "yaml" {
+		cmdArgs = append(cmdArgs, "get", SliceConfigObject, sliceConfigName, "-n", namespace, "-o", outputFormat)
+	} else {
+		cmdArgs = append(cmdArgs, "get", SliceConfigObject, sliceConfigName, "-n", namespace, "-o", "custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace,STATUS:.status.sliceConfig.status,GATEWAY_STATUS:.status.sliceGatewayStatus.status,REASON:.status.sliceConfig.reason")
+		util.Printf("\nSlice Health Status:")
+		util.Printf("====================")
+	}
+	
+	err := util.RunCommandOnStdIO("kubectl", cmdArgs...)
+	if err != nil {
+		util.Printf("❌ Error fetching slice health: %v", err)
+	}
+}
+
+func GetSliceHealthForNamespace(namespace string, controllerCluster *Cluster, outputFormat string) {
+	// Get all slice configs in the namespace with health status
+	cmdArgs := []string{}
+	if controllerCluster != nil {
+		cmdArgs = append(cmdArgs, "--context="+controllerCluster.ContextName, "--kubeconfig="+controllerCluster.KubeConfigPath)
+	}
+	
+	// Check if output format is specified
+	if outputFormat == "json" || outputFormat == "yaml" {
+		cmdArgs = append(cmdArgs, "get", SliceConfigObject, "-n", namespace, "-o", outputFormat)
+	} else {
+		cmdArgs = append(cmdArgs, "get", SliceConfigObject, "-n", namespace, "-o", "custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace,STATUS:.status.sliceConfig.status,GATEWAY_STATUS:.status.sliceGatewayStatus.status,REASON:.status.sliceConfig.reason")
+		util.Printf("\nSlice Health Status:")
+		util.Printf("====================")
+	}
+	
+	err := util.RunCommandOnStdIO("kubectl", cmdArgs...)
+	if err != nil {
+		util.Printf("❌ Error fetching slice health: %v", err)
+	}
+}
+
+func GetSliceHealthAllNamespaces(controllerCluster *Cluster, outputFormat string) {
+	// Get all slice configs across all namespaces with health status
+	cmdArgs := []string{}
+	if controllerCluster != nil {
+		cmdArgs = append(cmdArgs, "--context="+controllerCluster.ContextName, "--kubeconfig="+controllerCluster.KubeConfigPath)
+	}
+	
+	// Check if output format is specified
+	if outputFormat == "json" || outputFormat == "yaml" {
+		cmdArgs = append(cmdArgs, "get", SliceConfigObject, "--all-namespaces", "-o", outputFormat)
+	} else {
+		cmdArgs = append(cmdArgs, "get", SliceConfigObject, "--all-namespaces", "-o", "custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace,STATUS:.status.sliceConfig.status,GATEWAY_STATUS:.status.sliceGatewayStatus.status,REASON:.status.sliceConfig.reason")
+		util.Printf("\nSlice Health Status (All Namespaces):")
+		util.Printf("=====================================")
+	}
+	
+	err := util.RunCommandOnStdIO("kubectl", cmdArgs...)
+	if err != nil {
+		util.Printf("❌ Error fetching slice health: %v", err)
+	}
+}
