@@ -46,14 +46,14 @@ func calicoAlreadyInstalled(cluster *Cluster) bool {
 }
 
 func installCalicoOperatorPrerequisites(cluster *Cluster) {
-	err := util.RunCommand("kubectl", "--context="+cluster.ContextName, "--kubeconfig="+cluster.KubeConfigPath, "create", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.24.0/manifests/tigera-operator.yaml")
+	err := util.RunCommand("kubectl", "--context="+cluster.ContextName, "--kubeconfig="+cluster.KubeConfigPath, "create", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.30.0/manifests/tigera-operator.yaml")
 	if err != nil {
 		log.Fatalf("Process failed %v", err)
 	}
 }
 
 func createCalicoOperator(cluster *Cluster) {
-	err := util.RunCommand("kubectl", "--context="+cluster.ContextName, "--kubeconfig="+cluster.KubeConfigPath, "create", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.24.0/manifests/custom-resources.yaml")
+	err := util.RunCommand("kubectl", "--context="+cluster.ContextName, "--kubeconfig="+cluster.KubeConfigPath, "create", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.30.0/manifests/custom-resources.yaml")
 	if err != nil {
 		log.Fatalf("Process failed %v", err)
 	}
