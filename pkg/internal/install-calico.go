@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -18,7 +19,10 @@ func InstallCalico(clusterConfig *ClusterConfiguration) {
 			util.Printf("Installing on Cluster %s", cluster.Name)
 			installCalicoOperatorPrerequisites(cluster)
 			util.Printf("%s Successfully applied Calico Operator Prerequisites on Cluster %s", util.Tick, cluster.Name)
-			time.Sleep(200 * time.Millisecond)
+			
+			util.Printf("%s Waiting for Calico CRDs to be ready on Cluster %s...", util.Wait, cluster.Name)
+			waitForCalicoCRDs(cluster)
+			util.Printf("%s Calico CRDs are ready on Cluster %s", util.Tick, cluster.Name)
 
 			createCalicoOperator(cluster)
 			util.Printf("%s Successfully installed Calico Operator on Cluster %s", util.Tick, cluster.Name)
@@ -46,15 +50,45 @@ func calicoAlreadyInstalled(cluster *Cluster) bool {
 }
 
 func installCalicoOperatorPrerequisites(cluster *Cluster) {
-	err := util.RunCommand("kubectl", "--context="+cluster.ContextName, "--kubeconfig="+cluster.KubeConfigPath, "create", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.24.0/manifests/tigera-operator.yaml")
+	err := util.RunCommand("kubectl", "--context="+cluster.ContextName, "--kubeconfig="+cluster.KubeConfigPath, "create", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.30.0/manifests/tigera-operator.yaml")
 	if err != nil {
 		log.Fatalf("Process failed %v", err)
 	}
 }
 
 func createCalicoOperator(cluster *Cluster) {
-	err := util.RunCommand("kubectl", "--context="+cluster.ContextName, "--kubeconfig="+cluster.KubeConfigPath, "create", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.24.0/manifests/custom-resources.yaml")
+	err := util.RunCommand("kubectl", "--context="+cluster.ContextName, "--kubeconfig="+cluster.KubeConfigPath, "create", "-f", "https://raw.githubusercontent.com/projectcalico/calico/v3.30.0/manifests/custom-resources.yaml")
 	if err != nil {
 		log.Fatalf("Process failed %v", err)
 	}
+}
+
+// waitForCalicoCRDs waits for the Calico CRDs to be ready before applying custom resources
+func waitForCalicoCRDs(cluster *Cluster) {
+	err := Retry(10, 5*time.Second, func() error {
+		return checkCalicoCRDs(cluster)
+	})
+	if err != nil {
+		log.Fatalf("Failed to wait for Calico CRDs: %v", err)
+	}
+}
+
+// checkCalicoCRDs checks if the required Calico CRDs are available
+func checkCalicoCRDs(cluster *Cluster) error {
+	requiredCRDs := []string{
+		"installations.operator.tigera.io",
+		"apiservers.operator.tigera.io",
+	}
+	
+	for _, crd := range requiredCRDs {
+		var outB, errB bytes.Buffer
+		err := util.RunCommandCustomIO("kubectl", &outB, &errB, true, 
+			"--context="+cluster.ContextName, 
+			"--kubeconfig="+cluster.KubeConfigPath, 
+			"get", "crd", crd)
+		if err != nil {
+			return fmt.Errorf("CRD %s not ready: %v", crd, err)
+		}
+	}
+	return nil
 }
